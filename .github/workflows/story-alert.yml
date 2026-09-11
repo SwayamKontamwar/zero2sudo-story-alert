@@ -1,0 +1,63 @@
+name: Instagram Story alert
+
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: instagram-story-alert
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --requirement requirements.txt
+
+      - name: Restore private Instagram session
+        env:
+          INSTAGRAM_SESSION_B64: ${{ secrets.INSTAGRAM_SESSION_B64 }}
+        run: |
+          test -n "$INSTAGRAM_SESSION_B64" || { echo "Missing INSTAGRAM_SESSION_B64 secret"; exit 1; }
+          printf '%s' "$INSTAGRAM_SESSION_B64" | base64 --decode > instagram.session
+          chmod 600 instagram.session
+
+      - name: Check for new Stories and send email
+        env:
+          TARGET_USERNAME: zero2sudo
+          INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
+          INSTAGRAM_SESSION_FILE: instagram.session
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python -m story_alert
+
+      - name: Persist IDs of successfully emailed Stories
+        if: always()
+        run: |
+          if git diff --quiet -- data/seen_stories.json; then
+            echo "No state change"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/seen_stories.json
+          git commit -m "chore: remember emailed Instagram Stories"
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:$GITHUB_REF_NAME"
+

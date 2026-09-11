@@ -1,0 +1,7 @@
+[project]
+name = "zero2sudo-story-alert"
+version = "1.0.0"
+description = "Email alerts for new zero2sudo Instagram Stories"
+requires-python = ">=3.11"
+dependencies = ["instaloader>=4.14,<5"]
+
