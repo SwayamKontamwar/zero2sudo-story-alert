@@ -17,6 +17,8 @@ No password or session is stored in the repository.
 Instagram can challenge or invalidate automated sessions, and changes to Instagram can
 temporarily break Instaloader. Scheduled GitHub Actions can also start later than their
 nominal time during busy periods. This project is therefore best-effort, not guaranteed.
+If Instagram rate-limits a shared GitHub runner, that check exits quickly and the next
+scheduled run tries again instead of consuming minutes waiting inside the runner.
 
 ## One-time setup
 
@@ -85,4 +87,3 @@ triggered GitHub workflow so credentials never enter test fixtures.
 - A public repository exposes the monitored username and previously emailed Story IDs, but
   not the account credentials, recipient address, or session.
 - This uses unofficial automation and may stop working when Instagram changes its systems.
-

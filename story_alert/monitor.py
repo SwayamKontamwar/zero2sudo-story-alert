@@ -59,6 +59,10 @@ def fetch_active_stories(username: str, session_file: Path, login_username: str)
         save_metadata=False,
         compress_json=False,
         quiet=True,
+        # GitHub runners must never sleep for Instagram's 10+ minute 429 backoff.
+        # A later scheduled run is a better retry and keeps Actions usage free.
+        max_connection_attempts=1,
+        request_timeout=30,
     )
     loader.load_session_from_file(login_username, str(session_file))
     profile = instaloader.Profile.from_username(loader.context, username)
