@@ -4,6 +4,21 @@ A free, self-hosted monitor that checks the public Instagram profile
 [`@zero2sudo`](https://www.instagram.com/zero2sudo/) every 30 minutes and emails you
 when it finds a Story it has not reported before.
 
+Each email includes the posting time, direct Story link, and the photo or video
+as an attachment when Instagram exposes downloadable media of 15 MiB or less.
+Larger or unavailable downloads fall back to a temporary media URL and the Story
+link. Media URLs may expire; attachments remain in your inbox. Download failures
+do not prevent sending the notification.
+
+Exposed link-sticker and legacy swipe-up destinations are listed in the email.
+Links are extracted from Instagram metadata, not followed. URLs printed inside
+an image/video are not recognized (no OCR), and Instagram may omit sticker data.
+This adds no paid service or external media storage.
+
+For a delivery test, manually run the workflow with `send_test_email` enabled.
+It sends a clearly labeled synthetic PNG attachment and example link alongside
+the normal live check, without changing which real Stories count as seen.
+
 The workflow uses `@zero2sudo`'s stable numeric profile ID to call Instagram's current
 authenticated Story endpoint directly. This avoids the legacy username/GraphQL endpoints
 that Instagram commonly rate-limits on shared GitHub runners.

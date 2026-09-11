@@ -9,6 +9,11 @@ from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Iterable, Mapping
+from urllib.parse import urlsplit
+
+import requests
+
+MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -17,11 +22,19 @@ class Story:
     username: str
     posted_at: datetime
     media_type: str
+    media_url: str = ""
+    links: tuple[str, ...] = ()
 
     @property
     def instagram_url(self) -> str:
         return f"https://www.instagram.com/stories/{self.username}/{self.story_id}/"
 
+
+@dataclass(frozen=True)
+class Attachment:
+    data: bytes
+    content_type: str
+    filename: str
 
 def required_env(name: str, env: Mapping[str, str] = os.environ) -> str:
     value = env.get(name, "").strip()
@@ -49,6 +62,89 @@ def write_seen(path: Path, story_ids: Iterable[str], limit: int = 1000) -> None:
     )
 
 
+def http_url(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    try:
+        parsed = urlsplit(value)
+        return value if parsed.scheme in ("https", "http") and parsed.hostname and not parsed.username else ""
+    except ValueError:
+        return ""
+
+
+def story_links(item: Mapping[str, object]) -> tuple[str, ...]:
+    """Extract exposed link stickers/legacy swipe-up URLs; never follow them."""
+    found: list[str] = []
+
+    def visit(node: object) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in ("url", "webUri", "web_uri") and http_url(value):
+                    found.append(value)
+                elif isinstance(value, (dict, list)):
+                    visit(value)
+        elif isinstance(node, list):
+            for value in node:
+                visit(value)
+
+    for key in ("story_link", "story_link_stickers", "story_cta"):
+        visit(item.get(key))
+    # Newer payloads put the actual link under a story_link object in stickers.
+    for sticker in item.get("story_bloks_stickers", []) or []:
+        if isinstance(sticker, dict):
+            block = sticker.get("bloks_sticker")
+            if isinstance(block, dict):
+                visit(block.get("story_link"))
+    return tuple(dict.fromkeys(found))
+
+
+def media_url(item: Mapping[str, object]) -> str:
+    if int(item.get("media_type", 1)) == 2:
+        candidates = item.get("video_versions", [])
+    else:
+        candidates = (item.get("image_versions2") or {}).get("candidates", [])
+    candidates = [v for v in candidates or [] if isinstance(v, dict) and http_url(v.get("url"))]
+    candidates.sort(key=lambda v: int(v.get("width", 0)) * int(v.get("height", 0)), reverse=True)
+    return candidates[0]["url"] if candidates else ""
+
+
+def download_attachment(story: Story) -> tuple[Attachment | None, str]:
+    if not story.media_url:
+        return None, "Instagram did not provide a downloadable media URL."
+    url = story.media_url
+    try:
+        # Media requests never receive the Instagram login session or cookies.
+        for _ in range(4):
+            host = urlsplit(url).hostname or ""
+            if urlsplit(url).scheme != "https" or not any(
+                host.endswith("." + domain) or host == domain
+                for domain in ("cdninstagram.com", "fbcdn.net")
+            ):
+                return None, "Media host was unsupported; use the Story link below."
+            with requests.get(url, stream=True, timeout=(10, 20), allow_redirects=False) as response:
+                if response.is_redirect:
+                    url = response.headers.get("Location", "")
+                    continue
+                response.raise_for_status()
+                content_type = response.headers.get("Content-Type", "").split(";")[0].lower()
+                allowed = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "video/mp4": "mp4"}
+                if content_type not in allowed or not content_type.startswith(story.media_type + "/"):
+                    return None, "Media format was unsupported; use the Story link below."
+                if int(response.headers.get("Content-Length", "0")) > MAX_ATTACHMENT_BYTES:
+                    return None, "Media exceeds the 15 MiB attachment limit."
+                data = bytearray()
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if len(data) + len(chunk) > MAX_ATTACHMENT_BYTES:
+                        return None, "Media exceeds the 15 MiB attachment limit."
+                    data.extend(chunk)
+                if not data:
+                    return None, "Instagram returned empty media."
+                return Attachment(bytes(data), content_type, f"story.{allowed[content_type]}"), ""
+        return None, "Media redirected too many times."
+    except (requests.RequestException, ValueError):
+        return None, "Media download failed; use the links below."
+
+
 def stories_from_iphone_payload(payload: Mapping[str, object], username: str, user_id: int) -> list[Story]:
     reels = payload.get("reels", {})
     if not isinstance(reels, dict):
@@ -74,6 +170,8 @@ def stories_from_iphone_payload(payload: Mapping[str, object], username: str, us
                 username=username,
                 posted_at=datetime.fromtimestamp(int(taken_at), tz=timezone.utc),
                 media_type="video" if int(item.get("media_type", 1)) == 2 else "image",
+                media_url=media_url(item),
+                links=story_links(item),
             )
         )
     return sorted(found, key=lambda item: item.posted_at)
@@ -125,24 +223,40 @@ def fetch_active_stories(
                     username=username,
                     posted_at=posted,
                     media_type="video" if item.is_video else "image",
+                    media_url=item.video_url if item.is_video else item.url,
                 )
             )
     return sorted(found, key=lambda item: item.posted_at)
 
 
-def build_message(story: Story, sender: str, recipient: str) -> EmailMessage:
+def build_message(story: Story, sender: str, recipient: str,
+                  attachment: Attachment | None = None, attachment_note: str = "") -> EmailMessage:
     posted = story.posted_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     message = EmailMessage()
     message["Subject"] = f"New @{story.username} Instagram Story"
     message["From"] = sender
     message["To"] = recipient
+    extras = ""
+    if story.links:
+        extras += "Links in this Story (provided by the poster):\n" + "\n".join(story.links) + "\n\n"
+    if attachment:
+        extras += f"Story {story.media_type} attached: {attachment.filename}\n\n"
+    elif attachment_note:
+        extras += f"Attachment unavailable: {attachment_note}\n"
+        if http_url(story.media_url):
+            extras += f"Temporary media download/view link: {story.media_url}\n"
+        extras += "\n"
     message.set_content(
         f"@{story.username} posted a new Instagram Story.\n\n"
         f"Posted: {posted}\n"
         f"Type: {story.media_type}\n"
         f"Open Story: {story.instagram_url}\n\n"
-        "Instagram Stories normally expire after 24 hours."
+        + extras
+        + "Instagram Stories normally expire after 24 hours. Media links may expire sooner."
     )
+    if attachment:
+        maintype, subtype = attachment.content_type.split("/", 1)
+        message.add_attachment(attachment.data, maintype=maintype, subtype=subtype, filename=attachment.filename)
     return message
 
 
@@ -179,7 +293,8 @@ def run() -> int:
 
     ordered_seen = list(seen)
     for story in new_stories:
-        send_email(build_message(story, gmail_address, recipient), gmail_password)
+        attachment, note = download_attachment(story)
+        send_email(build_message(story, gmail_address, recipient, attachment, note), gmail_password)
         ordered_seen.append(story.story_id)
         write_seen(state_file, ordered_seen)
         print(f"Emailed Story {story.story_id}: {story.instagram_url}")

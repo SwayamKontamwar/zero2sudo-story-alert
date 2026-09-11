@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "7,37 * * * *"
   workflow_dispatch:
+    inputs:
+      send_test_email:
+        description: "Also send a clearly labeled sample attachment-and-links email"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -47,6 +52,14 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
         run: python -m story_alert
+
+      - name: Send sample attachment-and-links email
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.send_test_email }}
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python -m story_alert.test_email
 
       - name: Persist IDs of successfully emailed Stories
         if: always()
