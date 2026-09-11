@@ -49,7 +49,42 @@ def write_seen(path: Path, story_ids: Iterable[str], limit: int = 1000) -> None:
     )
 
 
-def fetch_active_stories(username: str, session_file: Path, login_username: str) -> list[Story]:
+def stories_from_iphone_payload(payload: Mapping[str, object], username: str, user_id: int) -> list[Story]:
+    reels = payload.get("reels", {})
+    if not isinstance(reels, dict):
+        return []
+    reel = reels.get(str(user_id), {})
+    if not isinstance(reel, dict):
+        return []
+    items = reel.get("items", [])
+    if not isinstance(items, list):
+        return []
+
+    found: list[Story] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        story_id = item.get("pk") or item.get("id")
+        taken_at = item.get("taken_at")
+        if story_id is None or taken_at is None:
+            continue
+        found.append(
+            Story(
+                story_id=str(story_id),
+                username=username,
+                posted_at=datetime.fromtimestamp(int(taken_at), tz=timezone.utc),
+                media_type="video" if int(item.get("media_type", 1)) == 2 else "image",
+            )
+        )
+    return sorted(found, key=lambda item: item.posted_at)
+
+
+def fetch_active_stories(
+    username: str,
+    session_file: Path,
+    login_username: str,
+    target_user_id: int | None = None,
+) -> list[Story]:
     import instaloader
 
     loader = instaloader.Instaloader(
@@ -65,6 +100,17 @@ def fetch_active_stories(username: str, session_file: Path, login_username: str)
         request_timeout=30,
     )
     loader.load_session_from_file(login_username, str(session_file))
+
+    # Instaloader's public username lookup and legacy Stories GraphQL query are
+    # frequently blocked on GitHub-hosted IPs. The authenticated mobile endpoint
+    # is current and accepts the stable numeric profile ID directly.
+    if target_user_id is not None:
+        payload = loader.context.get_iphone_json(
+            f"api/v1/feed/reels_media/?reel_ids={target_user_id}",
+            {},
+        )
+        return stories_from_iphone_payload(payload, username, target_user_id)
+
     profile = instaloader.Profile.from_username(loader.context, username)
 
     found: list[Story] = []
@@ -109,6 +155,10 @@ def send_email(message: EmailMessage, password: str) -> None:
 
 def run() -> int:
     target = os.getenv("TARGET_USERNAME", "zero2sudo").strip().lstrip("@").lower()
+    target_user_id_text = os.getenv("TARGET_USER_ID", "50350974961").strip()
+    if not target_user_id_text.isdigit():
+        raise RuntimeError("TARGET_USER_ID must contain only digits")
+    target_user_id = int(target_user_id_text)
     login_username = required_env("INSTAGRAM_USERNAME")
     session_file = Path(os.getenv("INSTAGRAM_SESSION_FILE", "instagram.session"))
     gmail_address = required_env("GMAIL_ADDRESS")
@@ -120,7 +170,7 @@ def run() -> int:
         raise RuntimeError(f"Instagram session file not found: {session_file}")
 
     seen = read_seen(state_file)
-    active = fetch_active_stories(target, session_file, login_username)
+    active = fetch_active_stories(target, session_file, login_username, target_user_id)
     new_stories = [story for story in active if story.story_id not in seen]
 
     if not new_stories:

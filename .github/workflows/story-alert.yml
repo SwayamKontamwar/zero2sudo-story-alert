@@ -40,6 +40,7 @@ jobs:
       - name: Check for new Stories and send email
         env:
           TARGET_USERNAME: zero2sudo
+          TARGET_USER_ID: "50350974961"
           INSTAGRAM_USERNAME: ${{ secrets.INSTAGRAM_USERNAME }}
           INSTAGRAM_SESSION_FILE: instagram.session
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}

@@ -4,6 +4,10 @@ A free, self-hosted monitor that checks the public Instagram profile
 [`@zero2sudo`](https://www.instagram.com/zero2sudo/) every 30 minutes and emails you
 when it finds a Story it has not reported before.
 
+The workflow uses `@zero2sudo`'s stable numeric profile ID to call Instagram's current
+authenticated Story endpoint directly. This avoids the legacy username/GraphQL endpoints
+that Instagram commonly rate-limits on shared GitHub runners.
+
 It runs on GitHub Actions, uses an Instagram session from a secondary account, sends
 mail through Gmail SMTP, and remembers emailed Story IDs in `data/seen_stories.json`.
 No password or session is stored in the repository.

@@ -4,7 +4,14 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from story_alert.monitor import Story, build_message, read_seen, required_env, write_seen
+from story_alert.monitor import (
+    Story,
+    build_message,
+    read_seen,
+    required_env,
+    stories_from_iphone_payload,
+    write_seen,
+)
 
 
 class MonitorTests(unittest.TestCase):
@@ -48,7 +55,27 @@ class MonitorTests(unittest.TestCase):
         self.assertIn(story.instagram_url, body)
         self.assertEqual(message["To"], "to@example.com")
 
+    def test_current_instagram_story_payload_is_parsed(self):
+        payload = {
+            "reels": {
+                "50350974961": {
+                    "items": [
+                        {"pk": "222", "taken_at": 1789140002, "media_type": 2},
+                        {"pk": "111", "taken_at": 1789140001, "media_type": 1},
+                    ]
+                }
+            }
+        }
+        stories = stories_from_iphone_payload(payload, "zero2sudo", 50350974961)
+        self.assertEqual([story.story_id for story in stories], ["111", "222"])
+        self.assertEqual([story.media_type for story in stories], ["image", "video"])
+
+    def test_missing_reel_means_no_active_story(self):
+        self.assertEqual(
+            stories_from_iphone_payload({"reels": {}}, "zero2sudo", 50350974961),
+            [],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
-
